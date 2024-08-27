@@ -140,6 +140,9 @@ class Extractor(nn.Module):
 
 
 class Adapter(nn.Module):
+    """
+    CLIP ViT 的 adapter, 添加到 CLIP ViT 的 vis encoder 层的输入部分.
+    """
     def __init__(self,
                  config=None,
                  d_model=None,
@@ -153,22 +156,22 @@ class Adapter(nn.Module):
         self.n_embd = config.d_model if d_model is None else d_model
         self.down_size = config.attn_bn if bottleneck is None else bottleneck
 
-        if adapter_scalar == "learnable_scalar":
+        if adapter_scalar == "learnable_scalar":  # default True
             self.scale = nn.Parameter(torch.ones(d_model)*1e-9)
         else:
             self.scale = float(adapter_scalar)
 
-        self.down_proj = nn.Linear(self.n_embd, self.down_size)
+        self.down_proj = nn.Linear(self.n_embd, self.down_size)  # 768 --> 64
         self.non_linear_func = nn.ReLU()
-        self.up_proj = nn.Linear(self.down_size, self.n_embd)
+        self.up_proj = nn.Linear(self.down_size, self.n_embd)    # 64 --> 768
         self.adapter_num_layers = adapter_num_layers
 
         self.dropout = dropout
         if init_option == "bert":
             raise NotImplementedError
-        elif init_option == "lora":
+        elif init_option == "lora":  # default True
             with torch.no_grad():
-                nn.init.kaiming_uniform_(self.down_proj.weight, a=math.sqrt(5))
+                nn.init.kaiming_uniform_(self.down_proj.weight, a=math.sqrt(5))  # kaiming_uniform是针对xavier初始化方法在relu这一类激活函数表现不佳而提出的改进
                 nn.init.zeros_(self.up_proj.weight)
                 nn.init.zeros_(self.down_proj.bias)
                 nn.init.zeros_(self.up_proj.bias)
@@ -183,7 +186,7 @@ class Adapter(nn.Module):
     def forward(self, x, prior=None):
         down = self.down_proj(x)
         down = self.non_linear_func(down) ## 197 x batchsize x 64
-        if prior is not None:
+        if prior is not None:  # default True
             context, mask = prior
             context = context.transpose(0,1) ## 18(#instance) x batchsize x 64
             for z, layer in enumerate(self.mhsa_layers):
@@ -421,6 +424,9 @@ class QuickGELU(nn.Module):
 
 
 class ResidualAttentionBlock(nn.Module):
+    """
+    ResidualAttentionBlock 是一层 transformer encoder, 在 encoder 的前面添加了 adapter
+    """
     def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None, adapter: bool=False, adapter_num_layers: int=1):
         super().__init__()
         self.attn = nn.MultiheadAttention(d_model, n_head)
@@ -432,7 +438,7 @@ class ResidualAttentionBlock(nn.Module):
         ]))
         self.ln_2 = LayerNorm(d_model)
         self.attn_mask = attn_mask
-        if adapter:
+        if adapter:  # default True: 为该层 transformer encoder 添加 adapter
             self.adaptermlp = Adapter(None,  d_model=d_model , dropout=0.1, bottleneck=64,
                                     init_option='lora',
                                     adapter_scalar='learnable_scalar',
@@ -790,8 +796,8 @@ class CLIP(nn.Module):
                  ):
         super().__init__()
 
-        self.context_length = context_length
-        if isinstance(vision_layers, (tuple, list)):
+        self.context_length = context_length  # 句子的长度
+        if isinstance(vision_layers, (tuple, list)):  # default False
             vision_heads = vision_width * 32 // 64
             self.visual = ModifiedResNet(
                 layers=vision_layers,
@@ -800,18 +806,18 @@ class CLIP(nn.Module):
                 input_resolution=image_resolution,
                 width=vision_width
             )
-        else:
+        else:  # default True
             vision_heads = vision_width // 64
             self.visual = VisionTransformer(
-                input_resolution=image_resolution,
-                patch_size=vision_patch_size,
-                width=vision_width,
-                layers=vision_layers,
-                heads=vision_heads,
-                output_dim=embed_dim,
-                use_adapter=use_adapter,
-                adapter_layers=kwargs["adapter_layers"],
-                adapter_num_layers=kwargs["adapter_num_layers"],
+                input_resolution=image_resolution, # 224
+                patch_size=vision_patch_size,      # 16
+                width=vision_width,                # 768
+                layers=vision_layers,              # 12
+                heads=vision_heads,                # 12
+                output_dim=embed_dim,              # 512
+                use_adapter=use_adapter,           # True
+                adapter_layers=kwargs["adapter_layers"],         # 需要adapter的encoder层编号列表
+                adapter_num_layers=kwargs["adapter_num_layers"], # adapter 中的 decoder 层数，默认为 1
             )
 
         self.transformer = Transformer(
@@ -935,11 +941,11 @@ def build_model(state_dict: dict, use_adapter=True, adapter_pos='all', adapter_n
     vit = "visual.proj" in state_dict
 
     if vit:
-        vision_width = state_dict["visual.conv1.weight"].shape[0]
+        vision_width = state_dict["visual.conv1.weight"].shape[0]  # 768
         vision_layers = len([k for k in state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
-        vision_patch_size = state_dict["visual.conv1.weight"].shape[-1]
-        grid_size = round((state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
-        image_resolution = vision_patch_size * grid_size
+        vision_patch_size = state_dict["visual.conv1.weight"].shape[-1]  # 每个 patch 的大小是 16x16 像素
+        grid_size = round((state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)  # 14x14 patch
+        image_resolution = vision_patch_size * grid_size  # 224
     else:
         counts: list = [len(set(k.split(".")[2] for k in state_dict if k.startswith(f"visual.layer{b}"))) for b in [1, 2, 3, 4]]
         vision_layers = tuple(counts)
@@ -949,13 +955,13 @@ def build_model(state_dict: dict, use_adapter=True, adapter_pos='all', adapter_n
         assert output_width ** 2 + 1 == state_dict["visual.attnpool.positional_embedding"].shape[0]
         image_resolution = output_width * 32
 
-    embed_dim = state_dict["text_projection"].shape[1]
-    context_length = state_dict["positional_embedding"].shape[0]
-    vocab_size = state_dict["token_embedding.weight"].shape[0]
-    transformer_width = state_dict["ln_final.weight"].shape[0]
-    transformer_heads = transformer_width // 64
+    embed_dim = state_dict["text_projection"].shape[1]  # 512
+    context_length = state_dict["positional_embedding"].shape[0]  # 77
+    vocab_size = state_dict["token_embedding.weight"].shape[0]    # 49408
+    transformer_width = state_dict["ln_final.weight"].shape[0]    # 512
+    transformer_heads = transformer_width // 64                   # 8
     transformer_layers = len(set(k.split(".")[2] for k in state_dict if k.startswith(f"transformer.resblocks")))
-    if adapter_pos == 'all':
+    if adapter_pos == 'all':  # default True: 在所有的 transformer encoder 层上添加 adapter
         adapter_layers = [z for z in range(vision_layers)]
     elif adapter_pos == 'front':
         adapter_layers = [z for z in range(vision_layers // 2)]

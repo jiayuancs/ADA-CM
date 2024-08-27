@@ -196,7 +196,7 @@ def main(rank, args):
         testset.dataset.object_n_verb_to_interaction = object_n_verb_to_interaction
 
     # args.hoi_cooccurence = tranverse_and_get_hoi_cooccurence(trainset.dataset)
-    if args.training_set_ratio < 0.9:
+    if args.training_set_ratio < 0.9:  # default False
         print(f'[INFO]: using {args.training_set_ratio} trainset to train!')
         sub_trainset, valset = trainset.dataset.split(args.training_set_ratio)
         trainset.dataset = sub_trainset
@@ -247,10 +247,12 @@ def main(rank, args):
     if args.dataset == 'swig':
         object_n_verb_to_interaction = train_loader.dataset.object_n_verb_to_interaction
     else:
+        # 形状为[80, 117]的二维列表，object_n_verb_to_interaction[i][j] 表示第 i 个 object 与第 j 个 verb 构成的 HOI 类别编号，
+        # 如果第 i 个 object 与第 j 个 verb 不构成 HOI 类别，则该元素为 None
         object_n_verb_to_interaction = train_loader.dataset.dataset.object_n_verb_to_interaction
 
     if args.dataset == 'hicodet':
-        if args.num_classes == 117:
+        if args.num_classes == 117:  # default True
             object_to_target = train_loader.dataset.dataset.object_to_verb
         elif args.num_classes == 600:
             object_to_target = train_loader.dataset.dataset.object_to_interaction
@@ -273,15 +275,15 @@ def main(rank, args):
         num_anno = None
     else:
         num_anno = torch.as_tensor(trainset.dataset.anno_interaction)
-        if args.num_classes == 117:
-            num_anno = torch.as_tensor(trainset.dataset.anno_action)
+        if args.num_classes == 117:  # default True
+            num_anno = torch.as_tensor(trainset.dataset.anno_action)  # num_anno[i] 表示第 i 个 verb 对应的实例个数
     upt = build_detector(args, object_to_target, object_n_verb_to_interaction=object_n_verb_to_interaction, clip_model_path=args.clip_dir_vit, num_anno=num_anno, verb2interaction=verb2interaction)
     if args.dataset == 'hicodet' and args.eval:  ## after building model, manually change obj_to_target
         if args.num_classes == 117:
             upt.object_class_to_target_class = test_loader.dataset.dataset.object_to_verb
         else:
             upt.object_class_to_target_class = test_loader.dataset.dataset.object_to_interaction
-    if args.pseudo_label:  ## if we generate pseudo label for unseen verbs,
+    if args.pseudo_label:  ## if we generate pseudo label for unseen verbs, default False
         pdb.set_trace()
         upt.object_class_to_target_class = test_loader.dataset.dataset.object_to_verb
 
@@ -314,7 +316,7 @@ def main(rank, args):
         upt.logit_scale_HO = torch.nn.Parameter(upt.logit_scale_HO * args.vis_tor)
         upt.logit_scale_U = torch.nn.Parameter(upt.logit_scale_U * args.vis_tor)
 
-    if args.tpt:
+    if args.tpt:  # default False
         engine = CustomisedDLE(
             upt, test_loader_for_tpt,
             max_norm=args.clip_max_norm,
@@ -371,9 +373,11 @@ def main(rank, args):
         p.requires_grad = False
 
     for n, p in upt.clip_head.named_parameters():
+        # CLIP visual encoder 中的部分参数设置为可学习的
         if n.startswith('visual.positional_embedding') or n.startswith('visual.ln_post') or n.startswith('visual.proj'): 
             p.requires_grad = True
             # print(n)
+        # adaptermlp 和 prompt_learner 都是作者额外添加的结构
         elif 'adaptermlp' in n or "prompt_learner" in n:
             p.requires_grad = True
             # print(n) 

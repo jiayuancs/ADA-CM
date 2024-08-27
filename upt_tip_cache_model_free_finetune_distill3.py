@@ -219,10 +219,10 @@ class PromptLearner(nn.Module):
 class CustomCLIP(nn.Module):
     def __init__(self, args, classnames, clip_model):
         super().__init__()
-        self.prompt_learner = PromptLearner(args, classnames, clip_model)
+        self.prompt_learner = PromptLearner(args, classnames, clip_model)  # TODO: 未使用??
         self.tokenized_prompts = self.prompt_learner.tokenized_prompts
         self.image_encoder = clip_model.visual
-        self.text_encoder = TextEncoder(clip_model)
+        self.text_encoder = TextEncoder(clip_model)                        # TODO: 未使用??
         self.logit_scale = clip_model.logit_scale
         self.dtype = clip_model.dtype
 
@@ -1487,6 +1487,7 @@ def build_detector(args, class_corr, object_n_verb_to_interaction, clip_model_pa
             detr.load_state_dict(torch.load(args.pretrained, map_location='cpu')['model_state_dict'])
     
     clip_state_dict = torch.load(clip_model_path, map_location="cpu").state_dict()
+    # clip_model 是对 clip 中每层 vis encoder 添加了 adaper 后的模型
     clip_model = CLIP_models_adapter_prior2.build_model(state_dict=clip_state_dict, use_adapter=args.use_insadapter, adapter_pos=args.adapter_pos, adapter_num_layers=args.adapter_num_layers)
     if args.num_classes == 117:
         classnames = hico_verbs_sentence
