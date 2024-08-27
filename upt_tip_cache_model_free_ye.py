@@ -32,7 +32,7 @@ from vcoco_list import vcoco_verbs_sentence
 sys.path.append('detr')
 # print(sys.path)
 from detr.models import build_model
-from d_detr.models import build_model as build_model_d_detr
+# from d_detr.models import build_model as build_model_d_detr
 import PIL
 from util import box_ops
 from util.misc import nested_tensor_from_tensor_list

@@ -26,7 +26,7 @@ from vcoco_list import vcoco_verbs_sentence
 sys.path.append('detr')
 # print(sys.path)
 from detr.models import build_model
-from d_detr.models import build_model as build_model_d_detr
+# from d_detr.models import build_model as build_model_d_detr
 from util import box_ops
 from util.misc import nested_tensor_from_tensor_list
 import pdb
@@ -291,7 +291,7 @@ class UPT(nn.Module):
         self.postprocessor = postprocessor
         self.clip_head = model
         self.origin_text_embeddings = origin_text_embeddings
-        self.object_embedding = object_embedding
+        self.object_embedding = object_embedding.cuda()  # Fix: 迁移到GPU上
         self.visual_output_dim = model.image_encoder.output_dim
         self.object_n_verb_to_interaction = np.asarray(
                                 object_n_verb_to_interaction, dtype=float
