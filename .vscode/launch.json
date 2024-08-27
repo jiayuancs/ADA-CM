@@ -1,0 +1,26 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "train with default args",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main_tip_finetune.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--world-size", "1",
+                "--pretrained", "checkpoints/detr-r50-hicodet.pth",
+                "--output-dir", "checkpoints/hico",
+                "--use_insadapter",
+                "--num_classes", "117",
+                "--use_multi_hot",
+                "--file1", "hicodet_pkl_files/union_embeddings_cachemodel_crop_padding_zeros_vitb16.p",
+                "--clip_dir_vit", "checkpoints/pretrained_clip/ViT-B-16.pt"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES":"3"
+            }
+        }
+    ]
+}
+
