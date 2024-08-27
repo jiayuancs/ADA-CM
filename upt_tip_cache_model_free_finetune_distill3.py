@@ -289,48 +289,48 @@ class UPT(nn.Module):
         super().__init__()
         self.detector = detector
         self.postprocessor = postprocessor
-        self.clip_head = model
-        self.origin_text_embeddings = origin_text_embeddings
-        self.object_embedding = object_embedding.cuda()  # Fix: 迁移到GPU上
-        self.visual_output_dim = model.image_encoder.output_dim
+        self.clip_head = model  # 具有 adapter 的 CLIP 模型
+        self.origin_text_embeddings = origin_text_embeddings  # verb 句子嵌入（经过 CLIP 文本编码器编码）
+        self.object_embedding = object_embedding.cuda()       # Fix: 迁移到GPU上. object 句子嵌入（经过 CLIP 文本编码器编码）
+        self.visual_output_dim = model.image_encoder.output_dim  # CLIP 图像编码器输出的维度. 512
         self.object_n_verb_to_interaction = np.asarray(
                                 object_n_verb_to_interaction, dtype=float
                             )
 
-        self.human_idx = human_idx
-        self.num_classes = num_classes
+        self.human_idx = human_idx      # 0
+        self.num_classes = num_classes  # 117
 
-        self.alpha = alpha
-        self.gamma = gamma
+        self.alpha = alpha  # 0.5
+        self.gamma = gamma  # 0.2
 
-        self.box_score_thresh = box_score_thresh
-        self.fg_iou_thresh = fg_iou_thresh
+        self.box_score_thresh = box_score_thresh  # 0.2
+        self.fg_iou_thresh = fg_iou_thresh        # 0.5
 
-        self.min_instances = min_instances
-        self.max_instances = max_instances
-        self.object_class_to_target_class = object_class_to_target_class
-        self.num_anno = kwargs["num_anno"]
+        self.min_instances = min_instances  # 3
+        self.max_instances = max_instances  # 15
+        self.object_class_to_target_class = object_class_to_target_class  # 每个 object 可能对应的 verb 类别列表
+        self.num_anno = kwargs["num_anno"]  # 每个 verb 类别对应的实例个数
 
-        self.use_distill = args.use_distill
-        self.use_consistloss = args.use_consistloss
+        self.use_distill = args.use_distill          # False
+        self.use_consistloss = args.use_consistloss  # False
 
-        self.num_classes = num_classes
-        self.use_multi_hot = args.use_multi_hot
-        self.obj_affordance = args.obj_affordance
+        self.num_classes = num_classes               # 117
+        self.use_multi_hot = args.use_multi_hot      # True
+        self.obj_affordance = args.obj_affordance    # False
 
         self.feature = []
         if 'HO' in args.logits_type:
             self.feature.append('hum_obj')
         if 'U' in args.logits_type or 'T' in args.logits_type:
             self.feature.append('uni')
-        self.feature = '_'.join(self.feature)
-        self.logits_type = args.logits_type
+        self.feature = '_'.join(self.feature)  # hum_obj_uni
+        self.logits_type = args.logits_type    # HO+U+T
 
-        num_shot = args.num_shot
-        file1 = args.file1
+        num_shot = args.num_shot  # 2
+        file1 = args.file1        # 'hicodet_pkl_files/union_embeddings_cachemodel_crop_padding_zeros_vitb16.p'
         # self.annotation_clip = pickle.load(open(file1,'rb'))
 
-        if args.zs:
+        if args.zs:  # default False
             self.zs_type = args.zs_type
             self.filtered_hoi_idx = hico_unseen_index[self.zs_type]
         else:
@@ -339,10 +339,10 @@ class UPT(nn.Module):
 
         self.unseen_verb_idxs = []
         self.label_choice = args.label_choice
-        if 'HO' in self.logits_type:
+        if 'HO' in self.logits_type:  # default True
             self.cache_model_HO, self.one_hots_HO, self.sample_lens_HO = self.load_cache_model(file1=file1, feature='hum_obj',num_classes=self.num_classes, num_shot=num_shot, filtered_hoi_idx = self.filtered_hoi_idx, use_multi_hot=self.use_multi_hot, label_choice=self.label_choice, num_anno=self.num_anno)
             self.cache_model_HO, self.one_hots_HO, self.sample_lens_HO  = self.cache_model_HO.cuda().float(), self.one_hots_HO.cuda().float(), self.sample_lens_HO.cuda().float()
-        if 'U' in self.logits_type:
+        if 'U' in self.logits_type:   # default True
             self.cache_model_U, self.one_hots_U, self.sample_lens_U = self.load_cache_model(file1=file1, feature='uni',num_classes=self.num_classes, num_shot=num_shot, filtered_hoi_idx = self.filtered_hoi_idx, use_multi_hot=self.use_multi_hot, label_choice=self.label_choice, num_anno=self.num_anno)
             self.cache_model_U, self.one_hots_U, self.sample_lens_U = self.cache_model_U.cuda().float(), self.one_hots_U.cuda().float(), self.sample_lens_U.cuda().float()
 
@@ -350,7 +350,7 @@ class UPT(nn.Module):
             self.seen_verb_idxs = [i for i in range(self.num_classes) if i not in self.unseen_verb_idxs]
         elif self.num_classes == 600:
             self.seen_hoi_idxs = [i for i in range(self.num_classes) if i not in self.filtered_hoi_idx]
-        
+
         self.individual_norm = True
         self.logits_type = args.logits_type #
         self.consist = True
@@ -540,6 +540,11 @@ class UPT(nn.Module):
             self.adapter_U_weight = nn.Parameter(self.cache_models[:, -self.visual_output_dim:].clone().detach())
 
     def load_cache_model(self,file1, feature='uni',num_classes=117, num_shot=10, filtered_hoi_idx=[], use_multi_hot=False, label_choice='random', num_anno=None):  ## √
+        """
+        TODO:
+        注意: 该方法默认加载所有训练集中的 verb 对应的 union_embeddings, object_embeddings, human_embeddings, 
+              并不会过滤掉 self.unseen_verb_idxs 中的动作类别
+        """
         annotation = pickle.load(open(file1,'rb'))
         categories = num_classes
         union_embeddings = [[] for i in range(categories)]
@@ -550,18 +555,26 @@ class UPT(nn.Module):
         verbs_iou = [[] for i in range(categories)] # contain 600hois or 117 verbs
         # hois_iou = [[] for i in range(len(hois))]
         each_filenames = [[] for i in range(categories)]
+
+        # 获取训练集中每张图片中的所有人物对的 union_box、human_box、object_box 特征和其对应的 ground-truth verb 类别
         for file_n in filenames:
             anno = annotation[file_n]
             # dict_keys (['boxes_h', 'boxes_o', 'verbs', 'union_boxes', 'union_features', 'huamn_features''object_features''objects', 'global_feature'])
             if categories == 117 or categories == 24: verbs = anno['verbs']
             else: verbs = (self.object_n_verb_to_interaction[anno['objects'], anno['verbs']]).astype(int)
-            
-            num_ho_pair = len(anno['boxes_h'])
+
+            # anno['real_verbs'][i] 是该图片中第 i 对人物对的动词类别的 one-hot 编码
+            num_ho_pair = len(anno['boxes_h'])  # 该图片中的人物对数量
             anno['real_verbs'] = np.zeros(shape=(num_ho_pair, categories))
             for i in range(num_ho_pair):
                 anno['real_verbs'][i][verbs[i]] = 1
-
-            if use_multi_hot:
+            
+            # TODO: multi_hot 合理吗?? 
+            # 如果图片中有两个不同的人物对，他们之间的 IoU 大于 0.6，例如 person1 eat orange1 和 person2 hold  orange2,
+            # person1 和 person2 的 IoU 大于 0.6, orange1 和 orange2 的 IoU 大于 0.6,
+            # 那么经过下面这段代码处理后，就会得到 person1 eat and hold orange1, person2 eat and hold orange2 这两个具有多个 verb 类别的人物对
+            # 这合理吗？？
+            if use_multi_hot:  # default True
                 boxes_h_iou = torchvision.ops.box_iou(torch.as_tensor(anno['boxes_h']), torch.as_tensor(anno['boxes_h']))
                 boxes_o_iou = torchvision.ops.box_iou(torch.as_tensor(anno['boxes_o']), torch.as_tensor(anno['boxes_o']))
                 for i in range(num_ho_pair):
@@ -592,13 +605,16 @@ class UPT(nn.Module):
                 # add iou
                 verbs_iou[v].append(ious[i])
 
-        if num_classes == 117:
+        if num_classes == 117:  # default True
+            # 检查是否所有 117 个 verb 类别都有对应的 union_embedding,
+            # 如果有些 verb 没有对应的 union_embedding，则将该 verb 添加到 unseen verb 列表中
             for i in range(categories):
                 if len(union_embeddings[i]) == 0:
                     self.unseen_verb_idxs.append(i)
             print('[INFO]: missing idxs of verbs:', self.unseen_verb_idxs)
+            # 对于 unseen verb，则采用随机生成一个长度为 512 的 embedding 作为其 union_embedding、obj_embedding、hum_embedding
             for i in self.unseen_verb_idxs:
-                for z in range(num_shot):
+                for z in range(num_shot):  # 2
                     union_embeddings[i].append(np.random.randn(self.visual_output_dim))
                     obj_embeddings[i].append(np.random.randn(self.visual_output_dim))
                     hum_embeddings[i].append(np.random.randn(self.visual_output_dim))
@@ -623,7 +639,7 @@ class UPT(nn.Module):
                 num_to_select = min(hum_emb.shape[0], num_shot)
                 
                 if num_to_select < hum_emb.shape[0]:
-                    if label_choice == 'random':
+                    if label_choice == 'random':  # default True
                         topk_idx = torch.randperm(new_embeddings.shape[0])[:num_to_select] 
                     elif label_choice == 'multi_first':
                         v_, topk_idx = torch.topk(torch.sum(real_v, dim=-1), k=num_to_select)
@@ -661,7 +677,7 @@ class UPT(nn.Module):
                 num_to_select = min(uni_emb.shape[0], num_shot)
 
                 if num_to_select < uni_emb.shape[0]:
-                    if label_choice == 'random':
+                    if label_choice == 'random':  # default True
                         topk_idx = torch.randperm(new_embeddings.shape[0])[:num_to_select] 
                     elif label_choice == 'multi_first':
                         v_, topk_idx = torch.topk(torch.sum(real_v, dim=-1), k=num_to_select)
@@ -690,8 +706,10 @@ class UPT(nn.Module):
         else:
             raise NotImplementedError
         
-        cache_models = torch.cat(cache_models_lst, dim=0)
-        labels = torch.cat(real_verbs_lst, dim=0)
+        cache_models = torch.cat(cache_models_lst, dim=0)  # 对于 hum_obj, 形状为 [n, 1024], 对于 uni, 形状应为 [n, 512]
+        labels = torch.cat(real_verbs_lst, dim=0)          # 形状为 [n, 117], multi-hot 编码
+        # torch.sum(labels, dim=0) 是每个verb类别对应的cache数量
+        # 对于 mutil-hot 编码，一个cache可对应多个verb类别
         return cache_models, labels, torch.sum(labels, dim=0)
 
     def get_clip_feature(self,image):  ## xxx
@@ -1450,8 +1468,8 @@ def get_multi_prompts(classnames):   ## https://github.com/openai/CLIP/blob/main
 
 @torch.no_grad()
 def get_origin_text_emb(args, clip_model, tgt_class_names, obj_class_names):
-    use_templates = args.use_templates
-    if use_templates == False:
+    use_templates = args.use_templates  # default False
+    if use_templates == False:  # default
         text_inputs = torch.cat([clip.tokenize(classname) for classname in tgt_class_names])
     elif use_templates:
         text_inputs = get_multi_prompts(tgt_class_names)
@@ -1460,7 +1478,7 @@ def get_origin_text_emb(args, clip_model, tgt_class_names, obj_class_names):
 
     with torch.no_grad():
         origin_text_embedding = clip_model.encode_text(text_inputs)
-    if use_templates:
+    if use_templates:  # default False
         origin_text_embedding = origin_text_embedding.view(bs_t, nums, -1).mean(0)
 
     origin_text_embedding = origin_text_embedding / origin_text_embedding.norm(dim=-1, keepdim=True) # text embeddings of hoi 117*512 or 600*512
@@ -1470,7 +1488,7 @@ def get_origin_text_emb(args, clip_model, tgt_class_names, obj_class_names):
         obj_text_embedding = clip_model.encode_text(obj_text_inputs)
         object_embedding = obj_text_embedding
         # obj_text_embedding = obj_text_embedding[hoi_obj_list,:]
-    return origin_text_embedding, object_embedding
+    return origin_text_embedding, object_embedding  # TODO: 这里为什么不对 object_embedding 进行 normalization
 
 
 def build_detector(args, class_corr, object_n_verb_to_interaction, clip_model_path, num_anno, verb2interaction=None):
@@ -1505,6 +1523,9 @@ def build_detector(args, class_corr, object_n_verb_to_interaction, clip_model_pa
         origin_text_embeddings = None
         object_embedding = torch.rand(1000, 1)
     else:
+        # classnames 是动词句子列表：["a photo of a person is <verbing> the object", ...]
+        # obj_class_names 是 object 句子列表: ["a photo of a/an <object>", ...]
+        # 使用 CLIP 的文本编码器对其进行编码，得到对应的 embeddings. origin_text_embeddings 形状为 [117, 512]; object_embedding 形状为 [81, 512], 最后一个 object 类别为 nothing.
         origin_text_embeddings, object_embedding = get_origin_text_emb(args, clip_model=clip_model, tgt_class_names=classnames, obj_class_names=obj_class_names)
         origin_text_embeddings = origin_text_embeddings.clone().detach()
         object_embedding = object_embedding.clone().detach()
@@ -1517,11 +1538,15 @@ def build_detector(args, class_corr, object_n_verb_to_interaction, clip_model_pa
         fg_iou_thresh=args.fg_iou_thresh,
         min_instances=args.min_instances,
         max_instances=args.max_instances,
+        # class_corr[i] 表示第 i 个 object 类别可以与哪些 verb 类别进行组合
         object_class_to_target_class=class_corr,
+        # 形状为[80, 117]的二维列表，object_n_verb_to_interaction[i][j] 表示第 i 个 object 与第 j 个 verb 构成的 HOI 类别编号，
+        # 如果第 i 个 object 与第 j 个 verb 不构成 HOI 类别，则该元素为 None
         object_n_verb_to_interaction=object_n_verb_to_interaction,
+        # num_anno[i] 表示第 i 个 verb 对应的实例个数
         num_anno = num_anno,
         # verb2interaction = verb2interaction,
-        use_mlp_proj = args.use_mlp_proj,
+        use_mlp_proj = args.use_mlp_proj,  # default False
     )
     return detector
 
