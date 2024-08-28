@@ -745,14 +745,14 @@ class UPT(nn.Module):
         x: Tensor, y: Tensor, scores: Tensor, object_class: Tensor
     ) -> Tensor:  ### √
         
-        prior_h = torch.zeros(len(x), self.num_classes, device=scores.device)
+        prior_h = torch.zeros(len(x), self.num_classes, device=scores.device)  # [ho_pairs_cnt, 117]
         prior_o = torch.zeros_like(prior_h)
         
         # Raise the power of object detection scores during inference
-        p = 1.0 if self.training else self.hyper_lambda
+        p = 1.0 if self.training else self.hyper_lambda  # p 就是论文公式(1)中的lambda
         s_h = scores[x].pow(p)
         s_o = scores[y].pow(p)
-        if self.dataset == 'swig':
+        if self.dataset == 'swig':  # default False
             prior_h = s_h.unsqueeze(-1).repeat(1, self.num_classes)
             prior_o = s_o.unsqueeze(-1).repeat(1, self.num_classes)
             return torch.stack([prior_h, prior_o])
@@ -765,10 +765,10 @@ class UPT(nn.Module):
         # Flatten mapped target indices
         flat_target_idx = [t for tar in target_cls_idx for t in tar]
 
-        prior_h[pair_idx, flat_target_idx] = s_h[pair_idx]
-        prior_o[pair_idx, flat_target_idx] = s_o[pair_idx]
-
-        return torch.stack([prior_h, prior_o])
+        prior_h[pair_idx, flat_target_idx] = s_h[pair_idx]  # 公式(1) 中的 {s_h}^{\lambda}
+        prior_o[pair_idx, flat_target_idx] = s_o[pair_idx]  # 公式(1) 中的 {s_o}^{\lambda}
+        # prior_h[i] 中的所有非零值都是相等的，并且等于该边界框的置信度分数(DETR输出的结果)，prior_o 也同理
+        return torch.stack([prior_h, prior_o])  # [2, ho_pairs_cnt, 117]
     
     def conditional_mask(self, mask_shape: tuple, uni_mask_coor, instance_mask_coor,):
         '''
@@ -800,17 +800,17 @@ class UPT(nn.Module):
         img_h, img_w = image_size.unbind(-1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
 
-        gt_feats_collated = []
-        pair_feats_collated = []
+        gt_feats_collated = []    # 用不到
+        pair_feats_collated = []  # 用不到
         gt_all_logits = []
         pair_logits = []
         pair_prior = []
         gt_labels = []
         for b_idx, props in enumerate(region_props):
-            local_features = features[b_idx]
-            boxes = props['boxes']
-            scores = props['scores']
-            labels = props['labels']
+            local_features = features[b_idx]  # [512, 14, 14]
+            boxes = props['boxes']            # [boxes_cnt, 4]
+            scores = props['scores']          # [boxes_cnt]
+            labels = props['labels']          # [boxes_cnt]
 
             is_human = labels == self.human_idx
             n_h = torch.sum(is_human); n = len(boxes)
@@ -829,6 +829,7 @@ class UPT(nn.Module):
                 prior_collated.append(torch.zeros(2, 0, self.num_classes, device=device))
                 continue
 
+            # 组合人框和物框, 形成若干人物对
             # Get the pairwise indices
             x, y = torch.meshgrid(
                 torch.arange(n, device=device),
@@ -840,21 +841,28 @@ class UPT(nn.Module):
                 # Should never happen, just to be safe
                 raise ValueError("There are no valid human-object pairs")
             x = x.flatten(); y = y.flatten()
-            
+
+            # 人物对中的人框、物框、联合框
             # extract single roi features
             sub_boxes = boxes[x_keep]
             obj_boxes = boxes[y_keep]
             lt = torch.min(sub_boxes[..., :2], obj_boxes[..., :2]) # left point
             rb = torch.max(sub_boxes[..., 2:], obj_boxes[..., 2:]) # right point
             union_boxes = torch.cat([lt,rb],dim=-1)
-            
+
+            # 使用 RoI-Align 从具有 Adapter 的 CLIP visual encoder 输出的特征图中获取人框、物框、联合框的特征
+            # torchvision.ops.roi_align 的 spatial_scale 参数是输入特征图的尺度与输入边界框尺度的比例,
+            # 在这里，输入特征图的尺度是 14x14，输入边界框坐标的尺度是 224x224，因此 spatial_scale = 14 / 224
+            # 1 / (224 / 14) = 14 / 224
             spatial_scale = 1 / (image_size[0,0]/local_features.shape[1])
             # union_features = torchvision.ops.roi_align(local_features.unsqueeze(0),[union_boxes],output_size=(1, 1),spatial_scale=spatial_scale,aligned=True).flatten(2).mean(-1)
             # single_features = torchvision.ops.roi_align(local_features.unsqueeze(0),[boxes],output_size=(1, 1),spatial_scale=spatial_scale,aligned=True).flatten(2).mean(-1)
+            # 联合框的特征 [ho_pair_cnt, 512, 7, 7], ho_pair_cnt 是人物对数量
             union_features = torchvision.ops.roi_align(local_features.unsqueeze(0),[union_boxes],output_size=(7, 7),spatial_scale=spatial_scale,aligned=True)
+            # 人框、物框的特征 [boxes_cnt, 512, 7, 7]
             single_features = torchvision.ops.roi_align(local_features.unsqueeze(0),[boxes],output_size=(7, 7),spatial_scale=spatial_scale,aligned=True)
 
-            if self.feat_mask_type == 0:
+            if self.feat_mask_type == 0:  # default True
                 union_features = self.featmap_dropout(union_features).flatten(2).mean(-1)
                 single_features = self.featmap_dropout(single_features).flatten(2).mean(-1)
             elif self.feat_mask_type == 1:
@@ -864,15 +872,17 @@ class UPT(nn.Module):
             # if self.box_proj == 1:
             #     box_feat = self.box_proj_mlp(torch.cat((sub_boxes, obj_boxes), dim=-1))
             
-            human_features = single_features[x_keep]
-            object_features = single_features[y_keep]
-            # default True
+            human_features = single_features[x_keep]   # 人框特征: [ho_pair_cnt, 512, 7, 7]
+            object_features = single_features[y_keep]  # 物框特征: [ho_pair_cnt, 512, 7, 7]
+            # default True, 对人框、物框、联合框的特征执行归一化过程
             if self.individual_norm: ## todo should use norm during finetuning?? 
                 concat_feat_original = torch.cat([human_features,object_features, union_features],dim=-1)
                 human_features = human_features / human_features.norm(dim=-1, keepdim=True)
                 object_features = object_features / object_features.norm(dim=-1, keepdim=True)
                 union_features = union_features / union_features.norm(dim=-1, keepdim=True)
-                if self.feature == 'hum_obj_uni':
+
+                # TODO: 后文并没有使用到 concat_feat
+                if self.feature == 'hum_obj_uni':  # default True
                     concat_feat = torch.cat([human_features, object_features, union_features],dim=-1) 
                 elif self.feature == 'hum_obj':
                     concat_feat = torch.cat([human_features, object_features], dim=-1)
@@ -882,18 +892,19 @@ class UPT(nn.Module):
                 concat_feat = torch.cat([human_features,object_features, union_features],dim=-1) 
                 concat_feat = concat_feat/concat_feat.norm(dim=-1,keepdim=True) 
 
-            if self.logits_type == 'HO+U+T':
-                phi_union_HO = torch.cat([human_features, object_features], dim=-1) @ self.adapter_HO_weight.T + self.adapter_HO_bias
-                phi_union_U = union_features @ self.adapter_U_weight.T + self.adapter_U_bias
-                logits_cache_HO = ((phi_union_HO @ self.label_HO) / self.sample_lens_HO) / 2
-                logits_cache_U = (phi_union_U @ self.label_U) / self.sample_lens_U
-                logits_text = union_features @ self.adapter_union_weight.T
+            if self.logits_type == 'HO+U+T':  # default True
+                # 这里执行论文中的公式(2)，即 Concept-guided Memeory 中的计算过程
+                phi_union_HO = torch.cat([human_features, object_features], dim=-1) @ self.adapter_HO_weight.T + self.adapter_HO_bias  # [ho_pair_cnt, cache_cnt]
+                phi_union_U = union_features @ self.adapter_U_weight.T + self.adapter_U_bias   # [ho_pair_cnt, cache_cnt]
+                logits_cache_HO = ((phi_union_HO @ self.label_HO) / self.sample_lens_HO) / 2   # phi_union_HO 是人框、物框特征拼接后计算得到的结果，故这里除以2; [ho_pair_cnt, 117]
+                logits_cache_U = (phi_union_U @ self.label_U) / self.sample_lens_U  # [ho_pair_cnt, 117]
+                logits_text = union_features @ self.adapter_union_weight.T          # [ho_pair_cnt, 117]
                 
-                if self.use_weight_pred:
+                if self.use_weight_pred:  # default False
                     logits_weights = self.weight_pred(torch.cat([human_features,object_features, union_features], dim=-1))
                     logits = logits_cache_HO * logits_weights[:, 0:1] + logits_cache_U * logits_weights[:, 1:2] + logits_text * logits_weights[:, 2:3]
-                else:
-                    logits = logits_cache_HO * self.logit_scale_HO + logits_cache_U * self.logit_scale_U + logits_text * self.logit_scale_text
+                else:  # default True
+                    logits = logits_cache_HO * self.logit_scale_HO + logits_cache_U * self.logit_scale_U + logits_text * self.logit_scale_text  # [ho_pair_cnt, 117]
 
             elif self.logits_type == 'HO+T':
                 phi_union_HO = torch.cat([human_features, object_features], dim=-1) @ self.adapter_HO_weight.T + self.adapter_HO_bias
@@ -942,13 +953,13 @@ class UPT(nn.Module):
                 else:
                     logits = logits_text * self.logit_scale_text
             
-            boxes_h_collated.append(x_keep)
-            boxes_o_collated.append(y_keep)
-            object_class_collated.append(labels[y_keep])
-            prior_collated.append(self.compute_prior_scores(
+            boxes_h_collated.append(x_keep)  # boxes_h_collated[i] 表示当前批量中第i张图片中所有人物对的人框索引
+            boxes_o_collated.append(y_keep)  # boxes_o_collated[i] 表示当前批量中第i张图片中所有人物对的物框索引
+            object_class_collated.append(labels[y_keep])  # object_class_collated[i] 表示当前批量中第i张图片中所有人物对的物框类别编号
+            prior_collated.append(self.compute_prior_scores(  # prior_collated[i] 表示当前批量中第i张图片中所有人物对的人、物边界框置信度分数，形状为 [ho_pairs_cnt, 117]
                 x_keep, y_keep, scores, labels)
             )
-            all_logits.append(logits)
+            all_logits.append(logits)  # all_logits[i] 表示当前批量中第i张图片中所有人物对的动作置信度分数，即论文公式(1)中的 s_{h,o}^a，具体计算方式见公式(2); 形状为 [ho_pairs_cnt, 117]
             # all_interactiveness.append(interactiveness)
             # if self.training:
             # # match with gt pairs 
@@ -992,11 +1003,12 @@ class UPT(nn.Module):
             #         # gt_label[torch.arange(len(gt_logits)).to(device),torch.as_tensor(self.annotation_clip[targets_region_props[b_idx]['filename']]['hois']).to(device)[y_pair]] = 1
             #         # gt_labels.append(gt_label)
         
-        if self.use_consistloss:
+        if self.use_consistloss:  # default False
             pair_prior = torch.cat(pair_prior, dim=1).prod(0)
             x_, y_ = torch.nonzero(pair_prior).unbind(1)
             return all_logits, prior_collated, boxes_h_collated, boxes_o_collated, object_class_collated, gt_feats_collated, pair_feats_collated, gt_all_logits
-        else:
+        else:  # default True
+            # gt_feats_collated, pair_feats_collated 实际上是空的，用不到
             return all_logits, prior_collated, boxes_h_collated, boxes_o_collated, object_class_collated, gt_feats_collated, pair_feats_collated
           
     def recover_boxes(self, boxes, size):  
@@ -1008,18 +1020,18 @@ class UPT(nn.Module):
 
     def associate_with_ground_truth(self, boxes_h, boxes_o, targets): ## for training
         n = boxes_h.shape[0]
-        labels = torch.zeros(n, self.num_classes, device=boxes_h.device)
+        labels = torch.zeros(n, self.num_classes, device=boxes_h.device)  # [ho_pairs_cnt, 117]
 
         gt_bx_h = self.recover_boxes(targets['boxes_h'], targets['size'])
         gt_bx_o = self.recover_boxes(targets['boxes_o'], targets['size'])
         
-        x, y = torch.nonzero(torch.min(
+        x, y = torch.nonzero(torch.min(  # 仅保留人框和物框均与ground-truth的IoU大于等于0.5的人物对
             box_iou(boxes_h, gt_bx_h),
             box_iou(boxes_o, gt_bx_o)
         ) >= self.fg_iou_thresh).unbind(1)
         # print("pair gt,",len(x),len(y))
         # IndexError: tensors used as indices must be long, byte or bool tensors
-        if self.dataset == 'swig' and self.training:
+        if self.dataset == 'swig' and self.training:  # default False
             if len(y) > 0:
                 tgthoi_y = torch.as_tensor([self.unique_hois[origin_hoi_idx.item()] for origin_hoi_idx in targets['hoi'][y]], device=boxes_h.device)
                 labels[x, tgthoi_y] = 1
@@ -1031,13 +1043,26 @@ class UPT(nn.Module):
         return labels
 
     def compute_interaction_loss(self, boxes, bh, bo, logits, prior, targets, gt_feats, pair_feats,): ### loss
+        """
+        损失函数
+
+        Args:
+            - boxes[i] 表示当前批量中第i张图片中的所有边界框坐标，形状为 [boxes_cnt, 4]
+            - bh[i] 表示当前批量中第i张图片中所有人物对的人框索引
+            - bo[i] 表示当前批量中第i张图片中所有人物对的物框索引
+            - logits[i] 表示当前批量中第i张图片中所有人物对的动作置信度分数，即论文公式(1)中的 s_{h,o}^a，具体计算方式见公式(2); 形状为 [ho_pairs_cnt, 117]
+            - prior[i] 表示当前批量中第i张图片中所有人物对的人、物边界框置信度分数，形状为 [2, ho_pairs_cnt, 117]，即论文公式(1)中的 {s_h}^{\lambda} 和 {s_o}^{\lambda}
+            - targets[i] 表示当前批量中第i张图片的 ground-truth
+            - gt_feats 为空列表 []
+            - pair_feats 为空列表 []
+        """
         ## bx, bo: indices of boxes
         labels = torch.cat([
             self.associate_with_ground_truth(bx[h], bx[o], target)
             for bx, h, o, target in zip(boxes, bh, bo, targets)
         ])
 
-        if self.pseudo_label and self.zs_type =='unseen_verb':
+        if self.pseudo_label and self.zs_type =='unseen_verb':  # default False
             W = (self.text_embedding[torch.as_tensor(self.seen_verb_idxs)] @ self.text_embedding[torch.as_tensor(self.unseen_verb_idxs)].T).to(labels.device)
             W = W.T
             W /= W.norm(dim=1, keepdim=True) ## 20 * 97
@@ -1079,6 +1104,19 @@ class UPT(nn.Module):
             return loss / n_p
 
     def prepare_region_proposals(self, results): ## √ detr extracts the human-object pairs
+        """
+        将目标检测器得到的box经过nms处理, 并按置信度进行过滤, 确保人框/物框的数量都在[min_instances, max_instances]范围内
+
+        Args:
+            results: list[dict], 是目标检测器输出结果，其列表长度等于批量大小，每一个字典元素含有三个键：
+                    scores: 每个框的置信度分数
+                    labels: 每个框的标签
+                    boxes: 每个框的坐标
+        Returns: list[dict]，其列表长度等于批量大小，每一个字典元素含有四个键：
+                    boxes: 形状为(box_num, 4), 表示过滤后的所有边界框坐标
+                    scores: 形状为(box_num,), 表示每个边界框的置信度分数
+                    labels: 形状为(box_num,), 表示每个边界框的标签编号
+        """
         region_props = []
         for res in results:
             sc, lb, bx = res.values()
@@ -1163,32 +1201,46 @@ class UPT(nn.Module):
         return obj_affordances
 
     def get_prior(self, region_props, image_size, prior_method): ##  for adapter module training
-        
-        max_feat = self.priors_initial_dim
-        max_length = max(rep['boxes'].shape[0] for rep in region_props)
-        mask = torch.ones((len(region_props),max_length),dtype=torch.bool,device=region_props[0]['boxes'].device)
-        priors = torch.zeros((len(region_props),max_length, max_feat), dtype=torch.float32, device=region_props[0]['boxes'].device)
+        """
+        为图片生成先验知识，该方法对应到论文中的 Instance Knowledge.
+        该方法为图片中的每一个box(由目标检测得到的box)生成一个先验向量, 先验向量维度为 517, 由三部分组成: 
+            - 该边界框的置信度分数(c), 维度为 1;
+            - 该边界框的坐标(b), 维度为 4;
+            - 该边界框的类别文本嵌入(e), 维度为 512;
+        先验向量经过 MLP 变换维度(517 --> 64), 从而得到维度为 64 的先验向量
+            
+        Args:
+            region_props: 目标检测的结果
+            image_size: 是 region_props 中边界框对应的图片大小
+            prior_method: default = 0, 表示 Instance-aware Adapter, 即论文中描述的方法
+        """
+        max_feat = self.priors_initial_dim  # 512 + 4 + 1
+        max_length = max(rep['boxes'].shape[0] for rep in region_props)  # 当前批量中，每个图片中最多出现多少个边界框, 这里记为 len
+        mask = torch.ones((len(region_props),max_length),dtype=torch.bool,device=region_props[0]['boxes'].device)  # 形状为 [8, len]
+        priors = torch.zeros((len(region_props),max_length, max_feat), dtype=torch.float32, device=region_props[0]['boxes'].device)  # 形状为 [8, len, 517]
         img_h, img_w = image_size.unbind(-1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
         
         for b_idx, props in enumerate(region_props):
-            boxes = props['boxes'] / scale_fct[b_idx][None,:]
+            boxes = props['boxes'] / scale_fct[b_idx][None,:]  # 将边界框坐标归一化
             scores = props['scores']
             labels = props['labels']
             is_human = labels == self.human_idx
             n_h = torch.sum(is_human); n = len(boxes)
             if n_h == 0 or n <= 1:
-                print(n_h,n)
+                print(f"Warning in get_prior: human boxes = {n_h}, object boxes = {n}")
                 # sys.exit()
             
-            object_embs = self.object_embedding[labels]
-            if self.obj_affordance:
+            object_embs = self.object_embedding[labels]  # 物体类别文本嵌入
+            if self.obj_affordance:  # default False
                 affordance_embs = self.get_obj_affordances(labels, region_props[0]['boxes'].device)
                 object_embs = affordance_embs.squeeze(1)
 
             mask[b_idx,:n] = False
             
-            if self.prior_type == 'cbe':
+            # c 表示边界框置信度分数(维度: 1); b 表示边界框(维度: 4); e 表示物体类别对应的句子的嵌入向量(维度: 512)
+            if self.prior_type == 'cbe':  # default True
+                # 1 + 4 + 512
                 priors[b_idx,:n,:5] = torch.cat((scores.unsqueeze(-1),boxes),dim=-1)
                 priors[b_idx,:n,5:self.visual_output_dim+5] = object_embs
                 # priors[b_idx,:n,512+5:] = unary_tokens
@@ -1209,7 +1261,7 @@ class UPT(nn.Module):
             else:
                 raise NotImplementedError
 
-        if prior_method == 0:
+        if prior_method == 0:  # default True
             priors = self.priors_downproj(priors)
         elif prior_method == 1:
             pair_wise_priors = []
@@ -1305,7 +1357,7 @@ class UPT(nn.Module):
             `size`: torch.Tensor
                 (2,) Image height and width
         """
-        if not self.finetune_adapter:
+        if not self.finetune_adapter:  # default False
             raise NotImplementedError
             if self.training and targets is None:
                 raise ValueError("In training mode, targets should be passed")
@@ -1351,7 +1403,7 @@ class UPT(nn.Module):
                 im.size()[-2:] for im in images_orig
                 ], device=device)
             
-            if self.dataset == 'swig':
+            if self.dataset == 'swig':  # default False
                 ## boxes should be xyxy in the origin whwh coordinate space
                 outputs = self.detector(images_orig)
                 detections = self.postprocessor(
@@ -1359,61 +1411,73 @@ class UPT(nn.Module):
                 )
                 results = detections
                 # results = [{'scores': tgt["pred_box_scores"].squeeze(), 'labels': tgt["pred_labels"], 'boxes': box_ops.box_cxcywh_to_xyxy(tgt["pred_boxes"]) * scale_fct[idx, None, :]} for idx, tgt in enumerate(targets)]
-            else:
-                if isinstance(images_orig, (list, torch.Tensor)):
+            else:  # default True
+                # 使用预训练的 DETR 执行目标检测过程
+                if isinstance(images_orig, (list, torch.Tensor)):  # default True, 将所有图片 tensor 通过补 0 对齐到当前批量中最大的那个图片
                     images_orig = nested_tensor_from_tensor_list(images_orig)
-                features, pos = self.detector.backbone(images_orig)
+                features, pos = self.detector.backbone(images_orig)  # detr 的 ResNet Backbone
                 src, mask = features[-1].decompose()
                 # assert mask is not None2
                 hs, detr_memory = self.detector.transformer(self.detector.input_proj(src), mask, self.detector.query_embed.weight, pos[-1])
-                outputs_class = self.detector.class_embed(hs) # 6x8x100x81 or 6x8x100x92
-                outputs_coord = self.detector.bbox_embed(hs).sigmoid() # 6x8x100x4 
-                if self.dataset == 'vcoco' and outputs_class.shape[-1] == 92:
+                outputs_class = self.detector.class_embed(hs) # 6x8x100x81 or 6x8x100x92, 图片中每个边界框的类别，维度6是transformer中各层的输出，通常仅使用最后一层的输出
+                outputs_coord = self.detector.bbox_embed(hs).sigmoid() # 6x8x100x4, 图片中的边界框(每张图片有100个边界框) 
+                if self.dataset == 'vcoco' and outputs_class.shape[-1] == 92:  # default False
                     outputs_class = outputs_class[:, :, :, self.reserve_indices]
                     assert outputs_class.shape[-1] == 81, 'reserved shape NOT match 81'
                 
                 results = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
                 results = self.postprocessor(results, image_sizes)
 
+            # 将目标检测器得到的box经过nms处理, 并按置信度进行过滤, 确保人框/物框的数量都在[min_instances, max_instances]范围内
             region_props = self.prepare_region_proposals(results)
-            if self.use_insadapter:
+            if self.use_insadapter:  # default True
+                # 获取当前图片的先验信息
                 priors = self.get_prior(region_props,image_sizes, self.prior_method) ## priors: (prior_feat, mask): (batch_size*14*64, batch_size*14)
             else: 
                 priors = None
             # with amp.autocast(enabled=True):
             images_clip = nested_tensor_from_tensor_list(images_clip)
-            # 8x512, 8x512x14x14
+            # 执行具有 Instance-aware Adapter 的 CLIP visual encoder.
+            # 8x512, 8x512x14x14, 8 是 batch_size
             feat_global, feat_local = self.clip_head.image_encoder(images_clip.decompose()[0], priors)
-            if self.use_mlp_proj:
+            if self.use_mlp_proj:  # default False
                 feat_local = feat_local.permute(0,2,3,1) # 8x14x14x512
                 feat_local = self.mlp_proj(feat_local)
                 feat_local = feat_local.permute(0,3,1,2)
 
-            if self.tpt:
+            if self.tpt:  # default False
                 interaction_loss = self.compute_loss_tpt(feat_local, image_sizes, region_props, targets)
                 loss_dict = dict(
                     interaction_loss=interaction_loss
                 )
                 return loss_dict
 
-            if self.dataset == 'swig' and self.training:
+            if self.dataset == 'swig' and self.training:  # default False
                 self.unique_hois = self.prepare_target_hois(targets=targets, device=device)
                 self.num_classes = len(self.unique_hois)
             
-            if self.use_consistloss:
+            if self.use_consistloss:  # default False
                 logits, prior, bh, bo, objects, gt_feats, pair_feats, gt_all_logits = self.compute_roi_embeddings(feat_local, image_sizes, region_props)
-            else:
+            else:  # default True
+                # logits[i] 表示当前批量中第i张图片中所有人物对的动作置信度分数，即论文公式(1)中的 s_{h,o}^a，具体计算方式见公式(2); 形状为 [ho_pairs_cnt, 117]
+                # prior[i] 表示当前批量中第i张图片中所有人物对的人、物边界框置信度分数，形状为 [2, ho_pairs_cnt, 117]，即论文公式(1)中的 {s_h}^{\lambda} 和 {s_o}^{\lambda}
+                # bh[i] 表示当前批量中第i张图片中所有人物对的人框索引
+                # bo[i] 表示当前批量中第i张图片中所有人物对的物框索引
+                # objects[i] 表示当前批量中第i张图片中所有人物对的物框类别编号
+                # gt_feats 为空列表 []
+                # pair_feats 为空列表 []
                 logits, prior, bh, bo, objects, gt_feats, pair_feats = self.compute_roi_embeddings(feat_local, image_sizes, region_props)
                 gt_all_logits = None
             boxes = [r['boxes'] for r in region_props] 
             
             if self.training:
+                # 损失函数
                 interaction_loss = self.compute_interaction_loss(boxes, bh, bo, logits, prior, targets, gt_feats, pair_feats)
                 loss_dict = dict(
                     interaction_loss=interaction_loss
                 )
                 # if interaction_loss.isnan():
-                if self.language_aware:
+                if self.language_aware:  # default False
                     self.origin_text_embeddings = self.origin_text_embeddings.to(self.adapter_union_weight.device)
                     # language_aware_loss = (1 - torch.diagonal((self.adapter_union_weight / self.adapter_union_weight.norm(dim=-1, keepdim=True)) @ self.origin_text_embeddings.T)).mean()
                     sim_matrix = (self.adapter_union_weight / self.adapter_union_weight.norm(dim=-1, keepdim=True)) @ self.origin_text_embeddings.T
