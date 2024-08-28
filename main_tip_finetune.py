@@ -577,6 +577,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_consistloss', action='store_true')
     
     parser.add_argument('--use_mean', action='store_true') # 13 -77
+    # HO 表示 human_feature 拼接 object feature、U 表示 union_box_feature、T 表示文本嵌入
     parser.add_argument('--logits_type', default='HO+U+T', type=str) # 13 -77 # text_add_visual, visual
     parser.add_argument('--num_shot', default='2', type=int) # 13 -77 # text_add_visual, visual
     parser.add_argument('--file1', default='./hicodet_pkl_files/hicodet_union_embeddings_cachemodel_crop_padding_zeros_vit336.p',type=str)

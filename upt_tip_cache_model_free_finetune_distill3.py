@@ -352,7 +352,7 @@ class UPT(nn.Module):
             self.seen_hoi_idxs = [i for i in range(self.num_classes) if i not in self.filtered_hoi_idx]
 
         self.individual_norm = True
-        self.logits_type = args.logits_type #
+        self.logits_type = args.logits_type  # HO+U+T
         self.consist = True
         self.evaluate_type = 'detr' # gt, detr
         
@@ -360,10 +360,11 @@ class UPT(nn.Module):
         self.beta_cache = torch.tensor(10)
         self.alpha_cache = torch.tensor(1.0)
 
-        self.prior_type = args.prior_type
+        self.prior_type = args.prior_type  # default cbe
         self.finetune_adapter = True
-        if self.prior_type == 'cbe':
-            self.priors_initial_dim = self.visual_output_dim+5
+        # c 表示边界框置信度分数(维度: 1); b 表示边界框(维度: 4); e 表示物体类别对应的句子的嵌入向量(维度: 512)
+        if self.prior_type == 'cbe':  # default True
+            self.priors_initial_dim = self.visual_output_dim+5  # 512 + 1 + 4
         elif self.prior_type == 'cb':
             self.priors_initial_dim = 5
         elif self.prior_type == 'ce':
@@ -379,40 +380,42 @@ class UPT(nn.Module):
         else:
             raise NotImplementedError
 
-        self.use_weight_pred = args.use_weight_pred
-        if self.finetune_adapter:
-            if 'HO' in self.logits_type:
+        self.use_weight_pred = args.use_weight_pred  # default False
+        if self.finetune_adapter:  # default True
+            if 'HO' in self.logits_type:  # default True
                 # self.adapter_HO = nn.Linear(self.visual_output_dim * 2, self.cache_models.shape[0], bias=True)
                 self.adapter_HO_weight = nn.Parameter(self.cache_model_HO.clone().detach())
                 self.adapter_HO_bias = nn.Parameter(-torch.ones(self.cache_model_HO.shape[0]))
-                self.label_HO = nn.Parameter(self.one_hots_HO, requires_grad=False)
-                if not self.use_weight_pred:
-                    self.logit_scale_HO = nn.Parameter(torch.ones([]) * np.log(1 / 0.07)) 
+                self.label_HO = nn.Parameter(self.one_hots_HO, requires_grad=False)  # label 是不可学习的
+                if not self.use_weight_pred:  # default True
+                    self.logit_scale_HO = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))  # 可学习的缩放因子
 
-            if 'U' in self.logits_type:
+            if 'U' in self.logits_type:  # default True
                 # self.adapter_U = nn.Linear(self.visual_output_dim, self.cache_models.shape[0], bias=True)
                 self.adapter_U_weight = nn.Parameter(self.cache_model_U.clone().detach())
                 self.adapter_U_bias = nn.Parameter(-torch.ones(self.cache_model_U.shape[0]))
-                self.label_U = nn.Parameter(self.one_hots_U, requires_grad=False)
-                if not self.use_weight_pred:
+                self.label_U = nn.Parameter(self.one_hots_U, requires_grad=False)  # label 是不可学习的
+                if not self.use_weight_pred:  # default True
                     self.logit_scale_U = nn.Parameter(torch.ones([]) * np.log(1 / 0.07)) 
 
-            if 'T' in self.logits_type:
+            if 'T' in self.logits_type:  # default True, T 表示 verb 文本嵌入, 即论文中的 Domain-Agnostic Knowledge
                 # self.adapter_union = nn.Linear(self.visual_output_dim, self.num_classes, bias=(args.zs == False))
-                self.adapter_union_weight = nn.Parameter(self.origin_text_embeddings.clone().detach())
-                if not self.use_weight_pred:
+                self.adapter_union_weight = nn.Parameter(self.origin_text_embeddings.clone().detach())  # verb 句子嵌入（经过 CLIP 文本编码器编码）
+                if not self.use_weight_pred:  # default True
                     self.logit_scale_text = nn.Parameter(torch.ones([]) * np.log(1 / 0.07)) 
         
-        if args.use_insadapter:
-            if args.prior_method == 0:
-                self.priors_downproj = MLP(self.priors_initial_dim, 128, 64, 3) # old 512+5   
+        if args.use_insadapter:  # default True
+            if args.prior_method == 0:  # default True
+                self.priors_downproj = MLP(self.priors_initial_dim, 128, 64, 3) # 512+4+1 --> 64
             elif args.prior_method == 1:
                 self.priors_downproj = MLP(self.priors_initial_dim * 2, 128, 64, 3) # old 512+5   
             elif args.prior_method == 2:
                 self.learnable_prior = nn.Parameter(torch.empty(args.vis_prompt_num, 64))
                 nn.init.xavier_normal_(self.learnable_prior)
 
+        # 600 个 HOI 类别中，属于 no_interaction 类别的编号
         self.no_interaction_indexes = [9, 23, 30, 45, 53, 64, 75, 85, 91, 95, 106, 110, 128, 145, 159, 169, 173, 185, 193, 197, 207, 213, 223, 231, 234, 238, 242, 246, 251, 256, 263, 272, 282, 289, 294, 304, 312, 324, 329, 335, 341, 347, 351, 355, 362, 367, 375, 382, 388, 392, 396, 406, 413, 417, 428, 433, 437, 444, 448, 452, 462, 473, 482, 487, 501, 505, 515, 527, 532, 537, 545, 549, 557, 561, 566, 575, 583, 587, 594, 599]
+        # HOI_IDX_TO_OBJ_IDX[i] 表示编号为 i 的 HOI 类别对应的 object 类别编号
         self.HOI_IDX_TO_OBJ_IDX = [
                 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 14,
                 14, 14, 14, 14, 14, 14, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 39,
@@ -446,6 +449,7 @@ class UPT(nn.Module):
                 7, 7, 25, 25, 25, 25, 25, 25, 25, 25, 75, 75, 75, 75, 40, 40, 40, 40, 40,
                 40, 40, 22, 22, 22, 22, 22
             ]
+        # obj_to_no_interaction[i] 表示编号为 i 的 object 对应的 no_interaction HOI 类别编号
         self.obj_to_no_interaction = torch.as_tensor([169, 23, 75, 159, 9, 64, 193, 575, 45, 566, 329, 505, 417, 246,
                                                         30,  85, 128, 145, 185, 106, 324, 238, 599, 347, 213, 583, 355, 545,
                                                         515, 341, 473, 482, 501, 375, 231, 234, 462, 527, 537,  53, 594, 304,
@@ -463,32 +467,33 @@ class UPT(nn.Module):
                     'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed', 'N/A', 'dining table', 'N/A', 'N/A', 'toilet', \
                     'N/A', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', \
                     'N/A', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush']
+        # reserve_indices 是 hicodet 中的 80 个 object 类别在 COCO 类别中的编号
         self.reserve_indices = [idx for (idx, name) in enumerate(self.COCO_CLASSES) if name != 'N/A']
-        self.reserve_indices = self.reserve_indices + [91]
+        self.reserve_indices = self.reserve_indices + [91]  # 新增一个编号为 91 的类别(nothing)
         self.reserve_indices = torch.as_tensor(self.reserve_indices)
-        self.dataset = args.dataset
-        self.hyper_lambda = args.hyper_lambda
-        self.pseudo_label = args.pseudo_label
-        self.tpt = args.tpt
+        self.dataset = args.dataset  # hicodet
+        self.hyper_lambda = args.hyper_lambda  # 2.8
+        self.pseudo_label = args.pseudo_label  # False
+        self.tpt = args.tpt  # False
         self.featmap_dropout = nn.Dropout(0.2)
-        self.feat_mask_type = args.feat_mask_type
-        self.language_aware = args.LA 
-        self.use_insadapter = args.use_insadapter
-        self.prior_method = args.prior_method
-        self.LA_weight = args.LA_weight
-        self.box_proj = args.box_proj
-        if self.box_proj:
+        self.feat_mask_type = args.feat_mask_type  # 0: dropout(random mask); 1: None; default 0
+        self.language_aware = args.LA  # False
+        self.use_insadapter = args.use_insadapter  # True
+        self.prior_method = args.prior_method      # 0: instance-wise, 1: pair-wise, 2: learnable; default 0
+        self.LA_weight = args.LA_weight  # 0.6
+        self.box_proj = args.box_proj    # 0: None; 1: f_u = ROI-feat + MLP(uni-box); defafult 0
+        if self.box_proj:  # default False
             self.box_proj_mlp = MLP(8, 128, self.visual_output_dim, num_layers=3)
-        if self.use_weight_pred:
+        if self.use_weight_pred:  # default False
             num_branch = len(self.logits_type.split('+'))
             self.weight_pred = Weight_Pred(input_dim=self.visual_output_dim*3, output_dim=num_branch)
-        if self.obj_affordance:
+        if self.obj_affordance:  # default False
             self.obj_affordance_query = nn.Parameter(torch.empty(1, self.visual_output_dim, dtype=self.clip_head.dtype))  # to be optimized
             self.obj_affordance_learner = nn.MultiheadAttention(embed_dim=512*1, num_heads=1, dropout=0.3, batch_first=True)
         # if self.dataset == 'swig':
         #     self.verb2interaction = torch.as_tensor(kwargs["verb2interaction"])
-        self.use_mlp_proj = kwargs["use_mlp_proj"]
-        if self.use_mlp_proj:
+        self.use_mlp_proj = kwargs["use_mlp_proj"]  # default False
+        if self.use_mlp_proj:  # default False
             self.mlp_proj = MLP(512, 512, 512, 3)
 
 
@@ -861,6 +866,7 @@ class UPT(nn.Module):
             
             human_features = single_features[x_keep]
             object_features = single_features[y_keep]
+            # default True
             if self.individual_norm: ## todo should use norm during finetuning?? 
                 concat_feat_original = torch.cat([human_features,object_features, union_features],dim=-1)
                 human_features = human_features / human_features.norm(dim=-1, keepdim=True)
